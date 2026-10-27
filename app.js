@@ -92,7 +92,12 @@ function siteHTML(s){
   <a class="brand" href="#top"><img src="${LOGO}" alt="" width="48" height="44"><span>${esc(s.brand.name)}</span></a>
   <nav class="links" aria-label="Main"><a href="#plans">Plans</a><a href="#coverage">Coverage</a><a href="#why">Why us</a><a href="#faq">FAQ</a><a href="#contact">Contact</a></nav>
   <a class="btn btn-primary" href="#contact">Get connected</a>
-</div></header>
+  <button class="menu-btn" type="button" data-act="menu" aria-expanded="false" aria-controls="mnav" aria-label="Open menu"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+</div>
+<nav class="mnav" id="mnav" aria-label="Main" hidden><div class="wrap">
+  <a href="#plans">Plans</a><a href="#coverage">Coverage</a><a href="#why">Why us</a><a href="#faq">FAQ</a><a href="#contact">Contact</a>
+  <a class="btn btn-primary" href="#contact">Get connected</a>
+</div></nav></header>
 <main id="top">
 <section class="hero">
   <div class="wrap hero-grid">
@@ -391,7 +396,7 @@ function mountWa(){
       <button class="wa-x" type="button" data-w="toggle" aria-label="Close chat">×</button></div>
     <div class="wa-body" id="wa-body" aria-live="polite"></div>
     <p class="wa-voice" id="wa-voice" aria-live="polite" ${voiceNote?"":"hidden"}>${esc(voiceNote)}</p>
-    <form class="wa-ask" id="wa-ask"><label for="wa-q" style="position:absolute;left:-9999px">Ask a question</label>
+    <form class="wa-ask" id="wa-ask"><label for="wa-q" class="sr-only">Ask a question</label>
       <textarea id="wa-q" rows="1" placeholder="${aiFn?"Ask about plans, slow internet, Wi-Fi…":"Type your question…"}" maxlength="600"></textarea>
       ${SR?`<button type="button" class="wa-mic" id="wa-mic" data-w="mic" aria-pressed="false" aria-label="Speak your question">${MIC_SVG}</button>`:""}
       <button type="submit" id="wa-qbtn" class="${aiCtl?"stop":""}" aria-label="${aiCtl?"Stop answer":"Send question"}">${aiCtl?'<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect width="14" height="14" rx="2" fill="currentColor"/></svg>':'<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 20.5 21.5 12 3 3.5l.01 6.6L16 12 3.01 13.9z"/></svg>'}</button></form>
@@ -620,6 +625,14 @@ waRoot.addEventListener("submit",e=>{e.preventDefault();
 waRoot.addEventListener("keydown",e=>{if(e.target.id==="wa-q"&&e.key==="Enter"&&!e.shiftKey){e.preventDefault();e.target.form.requestSubmit();}});
 waRoot.addEventListener("scroll",e=>{if(e.target.id==="wa-track")updateDots();},true);
 addEventListener("keydown",e=>{if(e.key==="Escape"&&waOpen){waOpen=false;stopVoice();mountWa();}});
+// Phone and tablet menu: opens from the header button; closes on a link tap, Escape, or a tap elsewhere.
+function setMenu(open){
+  const m=document.getElementById("mnav"),b=document.querySelector(".menu-btn");if(!m||!b)return;
+  m.hidden=!open;b.setAttribute("aria-expanded",String(open));b.setAttribute("aria-label",open?"Close menu":"Open menu");
+}
+addEventListener("click",e=>{const m=document.getElementById("mnav");if(!m||m.hidden)return;
+  if(e.target.closest(".mnav a")||!e.target.closest(".top"))setMenu(false);});
+addEventListener("keydown",e=>{const m=document.getElementById("mnav");if(e.key==="Escape"&&m&&!m.hidden){setMenu(false);document.querySelector(".menu-btn").focus();}});
 function rerenderSite(){const y=scrollY;app.innerHTML=(view==="preview"?previewBar():"")+siteHTML(view==="preview"?draft:PUBLISHED);siteAfter();scrollTo(0,y);}
 
 /* ---------- Login ---------- */
@@ -768,8 +781,8 @@ function requestsPage(){
   <p>Everything customers submit through the website chat. Change the status as you handle each request; add notes for your team.</p></div>
   <div class="req-tools">
     <div class="req-filters" role="group" aria-label="Show">${[["new","New"],["in_progress","In progress"],["done","Done"],["all","All"]].map(f=>`<button type="button" data-act="rfilter" data-f="${f[0]}" aria-pressed="${reqFilter===f[0]}">${f[1]}</button>`).join("")}</div>
-    <form class="req-search" id="req-search" role="search"><label for="rq" style="position:absolute;left:-9999px">Search requests</label>
-      <input id="rq" type="search" placeholder="Name, mobile, user ID or RV-number" value="${esc(reqQuery)}">
+    <form class="req-search" id="req-search" role="search"><label for="rq" class="sr-only">Search requests</label>
+      <input id="rq" type="search" placeholder="Name, mobile, ID or RV-no." value="${esc(reqQuery)}">
       <button class="btn btn-sm" type="submit">Search</button></form>
     <button class="btn btn-ghost btn-sm" type="button" data-act="rrefresh">Refresh</button>
   </div>
@@ -871,6 +884,7 @@ app.addEventListener("click",e=>{
   const act=b.dataset.act,i=+b.dataset.i;
   if(act!=="discard"&&discardArmed){discardArmed=false;const db=document.getElementById("discard-btn");if(db)db.textContent="Discard changes";}
   switch(act){
+    case "menu":setMenu(document.getElementById("mnav").hidden);break;
     case "cycle":cycle=+b.dataset.c;rerenderSite();break;
     case "choose":setTimeout(()=>{const s=document.getElementById("l-plan");if(s)s.value=b.dataset.plan;},0);break;
     case "copy":{const el=document.getElementById(b.dataset.t);
