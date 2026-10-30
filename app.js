@@ -1,6 +1,7 @@
 
 (function(){
 const LOGO="logo.png";
+const CUSTOMER_PORTAL="https://customer.rajeevvideonet.in";
 const BOOT=JSON.parse(document.getElementById("site-data").textContent);
 const SHEETS_URL=(window.RVS_CONFIG||{}).SHEETS_URL||"";
 // Last settings loaded from the Google Sheet, so repeat visitors see current prices straight away.
@@ -91,6 +92,7 @@ function siteHTML(s){
 <header class="top"><div class="wrap nav">
   <a class="brand" href="#top"><img src="${LOGO}" alt="" width="48" height="44"><span>${esc(s.brand.name)}</span></a>
   <nav class="links" aria-label="Main"><a href="#plans">Plans</a><a href="#coverage">Coverage</a><a href="#why">Why us</a><a href="#faq">FAQ</a><a href="#contact">Contact</a></nav>
+  <a class="btn btn-login" href="${CUSTOMER_PORTAL}" target="_blank" rel="noopener"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.4 0-8 2.3-8 5.2V21h16v-1.8c0-2.9-3.6-5.2-8-5.2Z"/></svg><span class="lg-full">Customer login</span><span class="lg-short" aria-hidden="true">Login</span><span class="sr-only"> (opens in a new tab)</span></a>
   <a class="btn btn-primary" href="#contact">Get connected</a>
   <button class="menu-btn" type="button" data-act="menu" aria-expanded="false" aria-controls="mnav" aria-label="Open menu"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
 </div>
@@ -209,7 +211,7 @@ function siteHTML(s){
 </main>
 <footer><div class="wrap foot">
   <div style="display:grid;gap:6px"><b>${esc(s.brand.name)}</b><span>${esc(c.address)}</span><span>© ${new Date().getFullYear()} ${esc(s.brand.name)}</span></div>
-  <nav aria-label="Footer"><a href="#plans">Plans</a><a href="#coverage">Coverage</a><a href="#faq">FAQ</a><a href="#contact">Contact</a><a href="#admin">Admin login</a></nav>
+  <nav aria-label="Footer"><a href="${CUSTOMER_PORTAL}" target="_blank" rel="noopener">Customer login<span class="sr-only"> (opens in a new tab)</span></a><a href="#plans">Plans</a><a href="#coverage">Coverage</a><a href="#faq">FAQ</a><a href="#contact">Contact</a><a href="#admin">Admin login</a></nav>
 </div></footer>`;
 }
 
