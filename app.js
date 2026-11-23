@@ -23,14 +23,17 @@ let waOpen=false;
 let draft=clone(PUBLISHED);
 try{const d=JSON.parse(ss.get("rv-draft")||"null");if(d&&d.plans&&!same(norm(d),PUBLISHED))draft=d;else ss.del("rv-draft");}catch(e){}
 let token=ss.get("rv-token")||"";
-let authed=!!token;
+// Who is signed in: {username, name, role}. Role "admin" manages everything; "staff" handles customer requests.
+let me=(()=>{try{return JSON.parse(ss.get("rv-user")||"null");}catch(e){return null;}})();
+let authed=!!(token&&me);
+const isAdminUser=()=>!!me&&me.role==="admin";
 // The Google Sheet's Apps Script is the website's backend. Calls go as plain text so browsers send them directly.
 async function gas(action,payload={},signal){
   if(!SHEETS_URL)return {error:"not_configured",message:"The website isn't connected to the Google Sheet yet (config.js)."};
   const r=await fetch(SHEETS_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action,...payload}),redirect:"follow",signal});
   return r.json();
 }
-const ERR_STATUS={unauthorized:401,rate_limited:429,locked:429,not_found:404};
+const ERR_STATUS={unauthorized:401,forbidden:403,rate_limited:429,locked:429,not_found:404};
 // Admin panel calls, answered by the sheet script in the shape the panel expects.
 async function api(path,opt={}){
   const method=opt.method||"GET",body=opt.body?JSON.parse(opt.body):{};
@@ -42,11 +45,21 @@ async function api(path,opt={}){
   const status=d.error?(ERR_STATUS[d.error]||400):200;
   return {ok:!d.error,status,json:async()=>d.error?{error:d.message}:d};
 }
+// Signed-in call to the sheet script. Signs the user out if their session has ended.
+async function call(action,payload={}){
+  let d;
+  try{d=await gas(action,{token,...payload});}catch(e){return {error:"network",message:"Couldn't reach the Google Sheet. Check your connection and try again."};}
+  if(d.error==="unauthorized"){signOut({k:"bad",t:"Your session has ended. Sign in again."});render();}
+  return d;
+}
 const clientId=()=>{try{let c=localStorage.getItem("rv-client");if(!c){c=Math.random().toString(36).slice(2,10)+Date.now().toString(36);localStorage.setItem("rv-client",c);}return c;}catch(e){return "";}};
 let sheetEmpty=false;
-function signOut(msg){authed=false;token="";ss.del("rv-token");pubMsg=msg||null;}
+function signOut(msg){authed=false;token="";me=null;ss.del("rv-token");ss.del("rv-user");pubMsg=msg||null;users=null;}
 let previewing=false, cycle=1, discardArmed=false, pubMsg=null, publishing=false, view="", anim=0;
-let adminTab=ss.get("rv-tab")==="requests"?"requests":"site", reqs=null, reqFilter="new", reqQuery="", reqError="", newCount=0;
+const ADMIN_TABS=["site","requests","users","account"],STAFF_TABS=["requests","account"];
+const allowedTab=t=>(isAdminUser()?ADMIN_TABS:STAFF_TABS).includes(t)?t:(isAdminUser()?"site":"requests");
+let users=null,usersMsg=null,userDelArmed="",resetOpen="",acctMsg=null;
+let adminTab=allowedTab(ss.get("rv-tab")||"site"), reqs=null, reqFilter="new", reqQuery="", reqError="", newCount=0;
 
 function saveDraft(){same(draft,PUBLISHED)?ss.del("rv-draft"):ss.set("rv-draft",JSON.stringify(draft));updateStatus();}
 const dirty=()=>sheetEmpty||!same(draft,PUBLISHED);
@@ -642,8 +655,8 @@ function loginHTML(){return `
 <div class="login"><div class="wrap" style="display:grid;place-items:center;width:100%">
 <form id="login-form" novalidate>
   <div class="brand"><img src="${LOGO}" alt="" width="48" height="44"><span>${esc(PUBLISHED.brand.name)}</span></div>
-  <h1>Admin login</h1>
-  <p>Sign in to edit plans, rates and contact details on the website.</p>${pubMsg&&pubMsg.k==="bad"?`<p class="err">${esc(pubMsg.t)}</p>`:""}
+  <h1>Staff & admin login</h1>
+  <p>Sign in to handle customer requests or manage the website.</p>${pubMsg&&pubMsg.k==="bad"?`<p class="err">${esc(pubMsg.t)}</p>`:""}
   <div class="field"><label for="u">Username</label><input id="u" autocomplete="username"></div>
   <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password"></div>
   <p class="err" id="login-err" aria-live="polite"></p>
@@ -655,16 +668,21 @@ function loginHTML(){return `
 function field(label,id,val,attrs=""){return `<div class="field"><label for="${id}">${label}</label><input id="${id}" value="${esc(val)}" ${attrs}></div>`;}
 function adminTop(){return `
 <div class="admin-top"><div class="wrap">
-  <div class="brand"><img src="${LOGO}" alt="" width="40" height="37"><span>Website admin</span></div>
+  <div class="brand"><img src="${LOGO}" alt="" width="40" height="37"><span>${isAdminUser()?"Website admin":"Staff panel"}</span></div>
   <div class="actions">
+    <span class="who">Signed in as <b>${esc(me?me.name||me.username:"")}</b> · ${isAdminUser()?"Admin":"Staff"}</span>
     ${adminTab==="site"?`<span class="chip" id="status"><i></i><span></span></span>`:""}
     <a class="btn btn-ghost btn-sm" href="#top" data-act="to-site">View live site</a>
     <button class="btn btn-ghost btn-sm" type="button" data-act="logout">Log out</button>
   </div>
 </div></div>`;}
-function tabsHTML(){return `<div class="tabs" role="tablist">
-  <button type="button" role="tab" data-act="tab" data-t="site" aria-selected="${adminTab==="site"}">Website</button>
-  <button type="button" role="tab" data-act="tab" data-t="requests" aria-selected="${adminTab==="requests"}">Requests<span class="count" id="new-count" ${newCount?"":"hidden"}>${newCount}</span></button>
+function tabsHTML(){
+  const tab=(t,label)=>`<button type="button" role="tab" data-act="tab" data-t="${t}" aria-selected="${adminTab===t}">${label}</button>`;
+  return `<div class="tabs" role="tablist">
+  ${isAdminUser()?tab("site","Website"):""}
+  ${tab("requests",`Requests<span class="count" id="new-count" ${newCount?"":"hidden"}>${newCount}</span>`)}
+  ${isAdminUser()?tab("users","Users"):""}
+  ${tab("account","My account")}
 </div>`;}
 function adminHTML(){
   const d=draft;
@@ -800,6 +818,7 @@ function reqListHTML(){
     return `<article class="req s-${r.status}">
     <div class="req-head"><h3>${esc(r.title)}</h3><span class="when">RV-${r.id} · ${esc(fmtWhen(r.created_at))}</span></div>
     <dl class="req-details">${(r.details||[]).map(d=>`<div><dt>${esc(d.label)}</dt><dd>${esc(d.value)}</dd></div>`).join("")}</dl>
+    <p class="req-who" id="rwho${r.id}">${whoHTML(r)}</p>
     <div class="req-actions">
       <div class="field"><label for="rst${r.id}">Status</label><select id="rst${r.id}" data-req="${r.id}">${Object.entries(STATUS_LABEL).map(([k,l])=>`<option value="${k}"${r.status===k?" selected":""}>${l}</option>`).join("")}</select></div>
       ${phone?`<a class="btn btn-ghost btn-sm" href="https://wa.me/91${phone}" target="_blank" rel="noopener">WhatsApp ${phone}</a><a class="btn btn-ghost btn-sm" href="tel:+91${phone}">Call</a>`:""}
@@ -807,6 +826,12 @@ function reqListHTML(){
     <div class="field"><label for="rn${r.id}">Notes for your team</label><textarea id="rn${r.id}" rows="2" maxlength="2000">${esc(r.notes||"")}</textarea></div>
     <div class="req-save"><button class="btn btn-sm" type="button" data-act="rsave" data-id="${r.id}">Save notes</button><span class="req-msg" id="rm${r.id}" aria-live="polite"></span></div>
   </article>`;}).join("");
+}
+function whoHTML(r){
+  const parts=[];
+  if(r.handled_by)parts.push(`Handled by <b>${esc(r.handled_by)}</b>`);
+  if(r.updated_by)parts.push(`Last updated by ${esc(r.updated_by)}${r.updated_at?" · "+esc(fmtWhen(r.updated_at)):""}`);
+  return parts.length?parts.join(" · "):"Not handled yet";
 }
 function paintReqs(){
   const el=document.getElementById("req-list");if(el)el.innerHTML=reqListHTML();
@@ -816,7 +841,7 @@ async function loadReqs(quiet){
   if(!quiet){reqs=null;reqError="";paintReqs();}
   try{
     const res=await api(`/api/requests?status=${reqFilter}&q=${encodeURIComponent(reqQuery)}`);
-    if(res.status===401){signOut({k:"bad",t:"Your admin session has expired. Sign in again."});render();return;}
+    if(res.status===401){signOut({k:"bad",t:"Your session has ended. Sign in again."});render();return;}
     const body=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(body.error);
     newCount=body.newCount||0;
@@ -829,13 +854,99 @@ async function saveReq(id,patch,msgEl){
   if(msgEl)msgEl.textContent="Saving…";
   try{
     const res=await api(`/api/requests/${id}`,{method:"PATCH",body:JSON.stringify(patch)});
-    if(res.status===401){signOut({k:"bad",t:"Your admin session has expired. Sign in again."});render();return;}
+    if(res.status===401){signOut({k:"bad",t:"Your session has ended. Sign in again."});render();return;}
     const body=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(body.error);
     const r=reqs&&reqs.find(x=>x.id===id);if(r)Object.assign(r,body.request);
+    const w=document.getElementById("rwho"+id);if(w)w.innerHTML=whoHTML(r||body.request);
     if(msgEl)msgEl.textContent="Saved";
     if(patch.status){loadReqs(true);const card=document.getElementById("rst"+id)?.closest(".req");if(card)card.className="req s-"+patch.status;}
   }catch(e){if(msgEl)msgEl.textContent=(e&&e.message)||"Couldn't save. Try again.";}
+}
+
+/* ---------- Admin: staff users ---------- */
+const fmtWhenOr=(iso,none)=>iso?fmtWhen(iso):none;
+function suggestPassword(){
+  const chars="abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789",a=new Uint32Array(10);crypto.getRandomValues(a);
+  return [...a].map(n=>chars[n%chars.length]).join("");
+}
+function usersPage(){
+  return `${adminTop()}
+<main class="wrap admin-main">
+  ${tabsHTML()}
+  <div class="admin-intro"><h2>Staff users</h2>
+  <p>Staff sign in on this same admin page and see only the Requests tab. They can change a request's status, add notes and call or WhatsApp the customer. They can't change website settings or manage users.</p></div>
+  ${usersMsg?`<div class="pub-msg ${usersMsg.k}" role="status">${esc(usersMsg.t)}</div>`:""}
+  <section class="panel">
+    <div class="panel-head"><div><h3>Add a staff user</h3><p>Give them the username and starting password. They can change the password under My account.</p></div></div>
+    <form id="user-form" class="user-form" novalidate>
+      <div class="field"><label for="nu-name">Full name</label><input id="nu-name" autocomplete="off" maxlength="60" placeholder="e.g. Priya Patil"></div>
+      <div class="field"><label for="nu-user">Username</label><input id="nu-user" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="30" placeholder="e.g. priya"></div>
+      <div class="field"><label for="nu-pass">Starting password</label>
+        <div class="pw-row"><input id="nu-pass" autocomplete="new-password" maxlength="100" placeholder="At least 8 characters"><button class="btn btn-ghost btn-sm" type="button" data-act="u-suggest">Suggest</button></div></div>
+      <div class="form-end"><p class="err" id="nu-err" aria-live="polite"></p><button class="btn btn-primary" type="submit">Add user</button></div>
+    </form>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><div><h3>Users</h3><p>The admin account (${esc(me?me.username:"")}) isn't listed here; change its password under My account.</p></div>
+    <button class="btn btn-ghost btn-sm" type="button" data-act="u-refresh">Refresh</button></div>
+    <div id="user-list">${userListHTML()}</div>
+  </section>
+</main>`;
+}
+function userListHTML(){
+  if(!users)return `<p class="empty">Loading users…</p>`;
+  if(!users.length)return `<p class="empty">No staff users yet. Add the first one above.</p>`;
+  return users.map(u=>`<article class="user-row${u.active?"":" off"}">
+    <div class="user-main">
+      <h4>${esc(u.name)} <span class="pill ${u.active?"live-p":"soon-p"}">${u.active?"Active":"Disabled"}</span></h4>
+      <p class="user-meta">Username <b>${esc(u.username)}</b> · Staff · Last sign-in ${esc(fmtWhenOr(u.last_login,"never"))}</p>
+    </div>
+    <div class="user-actions">
+      <button class="btn btn-ghost btn-sm" type="button" data-act="u-reset" data-u="${esc(u.username)}" aria-expanded="${resetOpen===u.username}">Reset password</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="u-toggle" data-u="${esc(u.username)}" data-on="${u.active?0:1}">${u.active?"Disable":"Enable"}</button>
+      <button class="btn btn-ghost btn-sm del" type="button" data-act="u-delete" data-u="${esc(u.username)}">${userDelArmed===u.username?"Click again to delete":"Delete"}</button>
+    </div>
+    ${resetOpen===u.username?`<form class="reset-form" data-u="${esc(u.username)}" novalidate>
+      <div class="field"><label for="rp-${esc(u.username)}">New password for ${esc(u.name)}</label>
+      <div class="pw-row"><input id="rp-${esc(u.username)}" autocomplete="new-password" maxlength="100" placeholder="At least 8 characters"><button class="btn btn-ghost btn-sm" type="button" data-act="u-suggest-reset" data-u="${esc(u.username)}">Suggest</button><button class="btn btn-primary btn-sm" type="submit">Save password</button></div></div>
+      <p class="err" id="rp-err-${esc(u.username)}" aria-live="polite"></p>
+    </form>`:""}
+  </article>`).join("");
+}
+function paintUsers(){const el=document.getElementById("user-list");if(el)el.innerHTML=userListHTML();}
+function showUsersMsg(k,t){usersMsg={k,t};if(view==="admin"&&adminTab==="users"){renderView();}}
+async function loadUsers(){
+  users=null;paintUsers();
+  const d=await call("listUsers");
+  if(d.error){users=[];if(d.error!=="unauthorized")showUsersMsg("bad",d.message);return;}
+  users=d.users;paintUsers();
+}
+async function userAction(action,payload,okText){
+  const d=await call(action,payload);
+  if(d.error){if(d.error!=="unauthorized")showUsersMsg("bad",d.message);return false;}
+  users=d.users;userDelArmed="";resetOpen="";showUsersMsg("ok",okText);return true;
+}
+
+/* ---------- My account: change your own password ---------- */
+function accountPage(){
+  return `${adminTop()}
+<main class="wrap admin-main">
+  ${tabsHTML()}
+  <div class="admin-intro"><h2>My account</h2>
+  <p>You're signed in as <b>${esc(me?me.name||me.username:"")}</b> (username <b>${esc(me?me.username:"")}</b>, ${isAdminUser()?"admin":"staff"}).</p></div>
+  ${acctMsg?`<div class="pub-msg ${acctMsg.k}" role="status">${esc(acctMsg.t)}</div>`:""}
+  <section class="panel narrow">
+    <div class="panel-head"><div><h3>Change password</h3><p>Use at least 8 characters. Your other signed-in devices will need to sign in again.</p></div></div>
+    <form id="pw-form" class="pw-form" novalidate>
+      <div class="field"><label for="pw-cur">Current password</label><input id="pw-cur" type="password" autocomplete="current-password"></div>
+      <div class="field"><label for="pw-new">New password</label><input id="pw-new" type="password" autocomplete="new-password" maxlength="100"></div>
+      <div class="field"><label for="pw-new2">Repeat new password</label><input id="pw-new2" type="password" autocomplete="new-password" maxlength="100"></div>
+      <p class="err" id="pw-err" aria-live="polite"></p>
+      <button class="btn btn-primary" type="submit">Change password</button>
+    </form>
+  </section>
+</main>`;
 }
 
 /* ---------- Render ---------- */
@@ -844,7 +955,10 @@ function renderView(){
   const isAdmin=routeIsAdmin();
   if(isAdmin&&!authed){view="login";app.innerHTML=loginHTML();document.getElementById("u").focus();return;}
   if(isAdmin&&previewing){view="preview";app.innerHTML=previewBar()+siteHTML(draft);siteAfter();return;}
+  if(isAdmin){adminTab=allowedTab(adminTab);}
   if(isAdmin&&adminTab==="requests"){view="admin";app.innerHTML=requestsPage();return;}
+  if(isAdmin&&adminTab==="users"){view="admin";app.innerHTML=usersPage();return;}
+  if(isAdmin&&adminTab==="account"){view="admin";app.innerHTML=accountPage();return;}
   if(isAdmin){view="admin";app.innerHTML=adminHTML();updateStatus();return;}
   view="site";app.innerHTML=siteHTML(PUBLISHED);siteAfter();
 }
@@ -864,7 +978,7 @@ function problems(){
   return out;
 }
 async function publish(){
-  if(publishing)return;
+  if(publishing||!isAdminUser())return;
   const errs=problems();
   if(errs.length){pubMsg={k:"bad",t:"Fix these before publishing: "+errs.join(" ")};previewing=false;render();scrollTo(0,0);return;}
   if(!dirty()){pubMsg={k:"info",t:"Nothing to publish. The website already shows these details."};previewing=false;render();scrollTo(0,0);return;}
@@ -893,11 +1007,20 @@ app.addEventListener("click",e=>{
       Promise.resolve().then(()=>navigator.clipboard.writeText(el.textContent)).then(()=>{b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500);})
       .catch(()=>{const s=getSelection(),r=document.createRange();r.selectNodeContents(el);s.removeAllRanges();s.addRange(r);});}break;
     case "to-site":previewing=false;break;
-    case "tab":adminTab=b.dataset.t;ss.set("rv-tab",adminTab);render();scrollTo(0,0);if(adminTab==="requests")loadReqs();break;
+    case "tab":adminTab=allowedTab(b.dataset.t);ss.set("rv-tab",adminTab);usersMsg=null;acctMsg=null;render();scrollTo(0,0);
+      if(adminTab==="requests")loadReqs();if(adminTab==="users")loadUsers();break;
+    case "u-refresh":usersMsg=null;loadUsers();break;
+    case "u-suggest":document.getElementById("nu-pass").value=suggestPassword();break;
+    case "u-suggest-reset":{const i=document.getElementById("rp-"+b.dataset.u);if(i)i.value=suggestPassword();}break;
+    case "u-reset":resetOpen=resetOpen===b.dataset.u?"":b.dataset.u;userDelArmed="";paintUsers();{const i=document.getElementById("rp-"+b.dataset.u);if(i)i.focus();}break;
+    case "u-toggle":{const on=b.dataset.on==="1",u=b.dataset.u;b.disabled=true;
+      userAction("updateUser",{username:u,active:on},on?`${u} can sign in again.`:`${u} is disabled and signed out. They can't sign in until you enable them.`);}break;
+    case "u-delete":if(userDelArmed!==b.dataset.u){userDelArmed=b.dataset.u;resetOpen="";paintUsers();}
+      else{const u=b.dataset.u;userAction("deleteUser",{username:u},`${u} was deleted. Requests they handled keep their name.`);}break;
     case "rfilter":reqFilter=b.dataset.f;document.querySelectorAll("[data-act=rfilter]").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));loadReqs();break;
     case "rrefresh":loadReqs();break;
     case "rsave":{const id=+b.dataset.id;saveReq(id,{notes:document.getElementById("rn"+id).value},document.getElementById("rm"+id));}break;
-    case "logout":api("/api/logout",{method:"POST"}).catch(()=>{});signOut();location.hash="top";render();scrollTo(0,0);break;
+    case "logout":signOut();location.hash="top";render();scrollTo(0,0);break;
     case "add-plan":draft.plans.push({id:"p"+Date.now(),name:"",mbps:100,price:0,features:["Unlimited data"],popular:false,visible:true});saveDraft();render();
       setTimeout(()=>{const n=document.getElementById("pn"+(draft.plans.length-1));if(n){n.scrollIntoView({block:"center"});n.focus();}},0);break;
     case "del-plan":draft.plans.splice(i,1);saveDraft();render();break;
@@ -934,13 +1057,45 @@ app.addEventListener("change",e=>{
 app.addEventListener("submit",e=>{
   e.preventDefault();const f=e.target;
   if(f.id==="req-search"){reqQuery=document.getElementById("rq").value.trim();loadReqs();return;}
+  if(f.id==="user-form"){
+    const err=document.getElementById("nu-err"),btn=f.querySelector("button[type=submit]");
+    const name=document.getElementById("nu-name").value.trim(),username=document.getElementById("nu-user").value.trim().toLowerCase(),password=document.getElementById("nu-pass").value;
+    if(!name){err.textContent="Enter the person's full name.";return;}
+    if(!/^[a-z0-9_-]{3,30}$/.test(username)){err.textContent="Username must be 3–30 characters: lowercase letters, numbers, - or _.";return;}
+    if(password.length<8){err.textContent="Use a starting password with at least 8 characters.";return;}
+    btn.disabled=true;btn.textContent="Adding…";err.textContent="";
+    call("createUser",{name,username,password}).then(d=>{
+      if(d.error){btn.disabled=false;btn.textContent="Add user";if(d.error!=="unauthorized")err.textContent=d.message;return;}
+      users=d.users;usersMsg={k:"ok",t:`${name} can now sign in with username ${username} and the password you set. Share it with them privately.`};renderView();});
+    return;
+  }
+  if(f.classList.contains("reset-form")){
+    const u=f.dataset.u,pw=document.getElementById("rp-"+u).value,err=document.getElementById("rp-err-"+u);
+    if(pw.length<8){err.textContent="Use at least 8 characters.";return;}
+    f.querySelector("button[type=submit]").disabled=true;
+    userAction("updateUser",{username:u,password:pw},`New password saved for ${u}. They're signed out and must use the new password.`);
+    return;
+  }
+  if(f.id==="pw-form"){
+    const cur=document.getElementById("pw-cur").value,n1=document.getElementById("pw-new").value,n2=document.getElementById("pw-new2").value,err=document.getElementById("pw-err"),btn=f.querySelector("button[type=submit]");
+    if(!cur){err.textContent="Enter your current password.";return;}
+    if(n1.length<8){err.textContent="Use a new password with at least 8 characters.";return;}
+    if(n1!==n2){err.textContent="The two new passwords don't match.";return;}
+    btn.disabled=true;btn.textContent="Saving…";err.textContent="";
+    call("changePassword",{currentPassword:cur,newPassword:n1}).then(d=>{
+      if(d.error){btn.disabled=false;btn.textContent="Change password";if(d.error!=="unauthorized")err.textContent=d.message;return;}
+      token=d.token;ss.set("rv-token",token);acctMsg={k:"ok",t:"Password changed. Use the new password next time you sign in."};renderView();});
+    return;
+  }
   if(f.id==="login-form"){
     const u=document.getElementById("u").value.trim(),p=document.getElementById("pw").value,err=document.getElementById("login-err"),btn=f.querySelector("button[type=submit]");
     btn.disabled=true;err.textContent="";
     gas("login",{username:u,password:p})
       .then(d=>({ok:!d.error,b:d.error?{error:d.message}:d}))
       .then(({ok,b})=>{
-        if(ok){token=b.token;authed=true;ss.set("rv-token",token);pubMsg=null;render();scrollTo(0,0);loadReqs(adminTab!=="requests");}
+        if(ok){token=b.token;me=b.user;authed=true;ss.set("rv-token",token);ss.set("rv-user",JSON.stringify(me));pubMsg=null;
+          adminTab=allowedTab(isAdminUser()?adminTab:"requests");ss.set("rv-tab",adminTab);render();scrollTo(0,0);
+          loadReqs(adminTab!=="requests");if(adminTab==="users")loadUsers();}
         else{btn.disabled=false;err.textContent=b.error||"Wrong username or password. Check both and try again.";document.getElementById("pw").value="";}
       }).catch(()=>{btn.disabled=false;err.textContent="Couldn't reach the server. Check your connection and try again.";});
     return;
@@ -972,7 +1127,7 @@ app.addEventListener("submit",e=>{
 });
 
 render();
-if(routeIsAdmin()&&authed)loadReqs(adminTab!=="requests");
+if(routeIsAdmin()&&authed){loadReqs(adminTab!=="requests");if(adminTab==="users")loadUsers();}
 // Load the latest settings from the Google Sheet, then refresh the page if anything changed.
 function rememberSite(){try{localStorage.setItem("rv-site",JSON.stringify(PUBLISHED));}catch(e){}}
 gas("getSettings").then(d=>{
